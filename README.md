@@ -1,15 +1,17 @@
-# Work in progress #
+# Multiagent Reasoning
 
-## Todo: ##
-- Add better prompting (system and user)
-- Add tool call for blackboard entries
-- Set up fixed iteration looping (e.g. n = 5)
+Testing whether multiagent debate improves reasoning on GSM8K math problems.
 
-## Questions: ##
-- What is an effective termination condition? Voting on confidence, meta-moderator, fixed rounds?
-- How can we improve communication methods? Currently using tags but hierarchical blackboard might make scoping problems easier
-- How do we determine triggering order? Hierarchical might be useful here as well
-- Can we add different prompts/capabilities to our agents?
+## Setup
+1. Create `.env` file with `GEMINI_API_KEY` from Google AI Studio
+2. Install dependencies: `pip install -r requirements.txt`
 
-## Setup: ##
-- Create .env file and add GEMINI_API_KEY from Google AI Studio
+## Usage
+- `python multiagent_system.py` - Run single problem with debate
+- `python gsm8k_eval.py` - Evaluate single vs multiagent on GSM8K
+
+## Open Questions:
+- Termination: Fixed rounds vs. confidence voting vs. meta-moderator?
+- Communication: Tags vs. hierarchical blackboard?
+- Agent diversity: Different prompts/capabilities per agent?
+- Triggering order: Methods for determining agent calls?
