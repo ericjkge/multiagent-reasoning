@@ -1,17 +1,12 @@
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from pydantic import BaseModel, Field
 
-# Load environment vars and dataset
+# Load environment variables
 load_dotenv()
 
-# Temporary setup
-problem = "Solve 10 + 10"
-blackboard = []
-rounds = 3
-agents = 2
-
-# Uses "GEMINI_API_KEY in .env"
+# Uses "GEMINI_API_KEY" in .env
 client = genai.Client()
 
 system_prompt = """
@@ -26,22 +21,10 @@ system_prompt = """
         - [QUESTION]: You need clarification on something
 """
 
-# Create independent agent contexts
-# List of lists of dicts (sublists are conversation histories for each agent)
-agent_contexts = [
-    [
-        types.Content(
-            role="user",
-            parts=[
-                types.Part(
-                    text=f"Try to solve {problem}. Choose from your given tags to determine which type of contribution would be most meaningful."
-                )
-            ],
-        )
-    ]
-    for _ in range(agents)
-]
-
+# Define structured output schema for synthesizer
+class Synthesized(BaseModel):
+    answer: int = Field(description="The final numerical answer to the problem")
+    reasoning: str = Field(description="Brief explanation of why this is the correct answer based on the discussion")
 
 # Extract text from blackboard (list of dicts)
 def get_text(blackboard: list) -> str:
@@ -50,73 +33,106 @@ def get_text(blackboard: list) -> str:
 
     return "\n\n".join([e["content"] for e in blackboard])
 
+def multiagent_solve(problem: str, rounds: int, agents: int) -> tuple[Synthesized, list]:
+    """
+    Run multiagent debate and return synthesized answer.
+    
+    Args:
+        problem: The problem to solve
+        rounds: Number of debate rounds
+        agents: Number of agents
+    
+    Returns:
+        Synthesized object with answer and reasoning
+    """
+    blackboard = []
 
-for round in range(rounds):
-    for i, agent_context in enumerate(agent_contexts):
-
-        # Only add blackboard context after the first round
-        if round > 0:
-            blackboard_summary = get_text(blackboard)
-            update_message = types.Content(
+    # Create independent agent contexts
+    agent_contexts = [
+        [
+            types.Content(
                 role="user",
                 parts=[
                     types.Part(
-                        text=f"""
-                Here's what has been discussed so far: {blackboard_summary}
-                """
+                        text=f"Try to solve {problem}. Choose from your given tags to determine which type of contribution would be most meaningful."
                     )
                 ],
             )
-            agent_context.append(update_message)
+        ]
+        for _ in range(agents)
+    ]
 
-        # Generate response with agent memory
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            config=types.GenerateContentConfig(system_instruction=system_prompt),
-            contents=agent_context,
-        )
+    for round in range(rounds):
+        for i, agent_context in enumerate(agent_contexts):
 
-        # Add response to agent memory
-        agent_context.append(
-            types.Content(role="model", parts=[types.Part(text=response.text)])
-        )
+            # Only add blackboard context after the first round
+            if round > 0:
+                blackboard_summary = get_text(blackboard)
+                update_message = types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            text=f"""
+                    Here's what has been discussed so far: {blackboard_summary}
+                    """
+                        )
+                    ],
+                )
+                agent_context.append(update_message)
 
-        # Add response to blackboard
-        blackboard.append({"agent_id": i, "round": round, "content": response.text})
+            # Generate response with agent memory
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                config=types.GenerateContentConfig(system_instruction=system_prompt),
+                contents=agent_context,
+            )
 
+            # Add response to agent memory
+            agent_context.append(
+                types.Content(role="model", parts=[types.Part(text=response.text)])
+            )
 
+            # Add response to blackboard
+            blackboard.append({"agent_id": i, "round": round, "content": response.text})
 
+    # Synthesize final answer
+    synthesizer_prompt = f"""
+        You are a synthesizer agent responsible for determining the final output of a collaborative problem-solving session.
+        Problem: {problem}
 
+        Discussion: {get_text(blackboard)}
 
+        Task: Based on all the reasoning above, provide the final numerical answer and your reasoning.
+    """
 
+    synthesized = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=synthesizer_prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=Synthesized.model_json_schema(),
+        ),
+    )
 
+    final_answer = Synthesized.model_validate_json(synthesized.text)
+    return final_answer, blackboard
 
-# Write output to file instead of printing
-output_file = "output.txt"
+# Main execution (for standalone testing)
+if __name__ == "__main__":
+    problem = "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?"
 
-with open(output_file, "w") as f:
-    f.write("=== FINAL BLACKBOARD ===\n\n")
+    final_answer, blackboard = multiagent_solve(problem, rounds=2, agents=1)
 
-    for entry in blackboard:
-        f.write(f"Agent {entry['agent_id']} (Round {entry['round']}):\n")
-        f.write(f"{entry['content']}\n")
-        f.write("-" * 80 + "\n")
+    # Write blackboard to output file
+    output_file = "output.txt"
 
-    f.write("=== AGENT MEMORIES ===\n\n")
+    with open(output_file, "w") as f:
+        f.write(f"=== FINAL ANSWER: {final_answer.answer} === \n\n")
+        f.write(f"Reasoning: {final_answer.reasoning}\n\n")
 
-    for i, context in enumerate(agent_contexts):
-        f.write(f"AGENT {i} - Total messages: {len(context)}\n")
+        f.write("=== FINAL BLACKBOARD ===\n\n")
 
-        for j, msg in enumerate(context):
-            f.write(f"[Message {j}] Role: {msg.role}\n")
-            f.write(f"{msg.parts[0].text}\n")
+        for entry in blackboard:
+            f.write(f"Agent {entry['agent_id']} (Round {entry['round']}):\n")
+            f.write(f"{entry['content']}\n")
             f.write("-" * 80 + "\n")
-
-print(f"Output written to {output_file}")
-
-
-"""
-Structured outputs: https://ai.google.dev/gemini-api/docs/structured-output?example=recipe
-Thought signatures: https://ai.google.dev/gemini-api/docs/thought-signatures
-Also function calling, 
-"""
