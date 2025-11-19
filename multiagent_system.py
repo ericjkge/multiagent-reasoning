@@ -21,10 +21,14 @@ system_prompt = """
         - [QUESTION]: You need clarification on something
 """
 
+
 # Define structured output schema for synthesizer
 class Synthesized(BaseModel):
     answer: int = Field(description="The final numerical answer to the problem")
-    reasoning: str = Field(description="Brief explanation of why this is the correct answer based on the discussion")
+    reasoning: str = Field(
+        description="Brief explanation of why this is the correct answer based on the discussion"
+    )
+
 
 # Extract text from blackboard (list of dicts)
 def get_text(blackboard: list) -> str:
@@ -33,15 +37,18 @@ def get_text(blackboard: list) -> str:
 
     return "\n\n".join([e["content"] for e in blackboard])
 
-def multiagent_solve(problem: str, rounds: int, agents: int) -> tuple[Synthesized, list]:
+
+def multiagent_solve(
+    problem: str, rounds: int, agents: int
+) -> tuple[Synthesized, list]:
     """
     Run multiagent debate and return synthesized answer.
-    
+
     Args:
         problem: The problem to solve
         rounds: Number of debate rounds
         agents: Number of agents
-    
+
     Returns:
         Synthesized object with answer and reasoning
     """
@@ -116,6 +123,38 @@ def multiagent_solve(problem: str, rounds: int, agents: int) -> tuple[Synthesize
 
     final_answer = Synthesized.model_validate_json(synthesized.text)
     return final_answer, blackboard
+
+
+def single_agent_solve(problem: str) -> Synthesized:
+    """
+    Run single agent baseline (no debate).
+
+    Args:
+        problem: The problem to solve
+
+    Returns:
+        Synthesized object with answer and reasoning
+    """
+    single_agent_prompt = f"""
+        You are a helpful math problem solver.
+        
+        Problem: {problem}
+        
+        Task: Solve this problem step by step and provide your final numerical answer with reasoning.
+    """
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=single_agent_prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=Synthesized.model_json_schema(),
+        ),
+    )
+
+    result = Synthesized.model_validate_json(response.text)
+    return result
+
 
 # Main execution (for standalone testing)
 if __name__ == "__main__":
