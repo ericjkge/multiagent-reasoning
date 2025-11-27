@@ -1,4 +1,16 @@
-# Zero-shot CoT
+# System Prompt
+system_prompt = """You are an expert reasoning agent.
+
+Goal: Solve problems using multi-path, step-by-step reasoning.
+
+Task: Review the history of the problem solving process and, based on the prompt, either
+
+1. Propose valid next steps 
+OR
+2. Evaluate existing ones objectively
+"""
+
+# Zero-shot CoT (for baseline)
 cot_prompt = """
 Problem: {input}
 
