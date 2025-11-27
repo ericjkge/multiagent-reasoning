@@ -1,17 +1,18 @@
 # Multiagent Reasoning
 
-Testing whether multiagent debate improves reasoning on GSM8K math problems.
+A **Tree of Thoughts** framework for multi-agent reasoning using Breadth-First Search (BFS).
 
-## Setup
-1. Create `.env` file with `GEMINI_API_KEY` from Google AI Studio
-2. Install dependencies: `pip install -r requirements.txt`
+## Quick Start
+1. Set `GEMINI_API_KEY` in `.env`
+2. `pip install -r requirements.txt`
+3. Run ToT: `python3 multiagent_system.py`
+4. Run Baseline (CoT): `python3 baseline.py`
 
-## Usage
-- `python multiagent_system.py` - Run single problem with debate
-- `python gsm8k_eval.py` - Evaluate single vs multiagent on GSM8K
+## Files
+- `multiagent_system.py`: Main ToT class (BFS search)
+- `tasks.py`: Task logic (e.g. Game of 24)
+- `prompts.py`: Prompt templates
+- `baseline.py`: Zero-shot CoT baseline
 
-## Open Questions:
-- Termination: Fixed rounds vs. confidence voting vs. meta-moderator?
-- Communication: Tags vs. hierarchical blackboard?
-- Agent diversity: Different prompts/capabilities per agent?
-- Triggering order: Methods for determining agent calls?
+## Config
+Modify `k` (width), `b` (breadth), and `d` (depth) in `multiagent_system.py` to tune the search.
