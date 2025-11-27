@@ -36,6 +36,7 @@ class TreeOfThoughts:
 
         # Empty "tree" for tracking paths (strings representing full move histories)
         current_paths = [""] 
+        total_tokens = 0
         
         # Loop for "d" steps
         for step in range(d):
@@ -44,7 +45,8 @@ class TreeOfThoughts:
             # 1. Generate k new thoughts per path
             candidates = []
             for path in current_paths:
-                proposals = self._propose(initial_problem, path, k)
+                proposals, tokens = self._propose(initial_problem, path, k)
+                total_tokens += tokens
                 
                 for p in proposals:
                     new_path = (path + "\n" + p).strip() # Old path + new thought (NOTE: redundant path copying)
@@ -57,7 +59,8 @@ class TreeOfThoughts:
             evaluated_thoughts = []
             for path in candidates:
                 last_step = path.split('\n')[-1] # Evaluate last step in each path (i.e. new thought)
-                score = self._evaluate(initial_problem, path, last_step)
+                score, tokens = self._evaluate(initial_problem, path, last_step)
+                total_tokens += tokens
                 evaluated_thoughts.append(Thought(thought=path, score=score))
 
             # 3. Select top "b" new thoughts (prune others)
@@ -68,11 +71,12 @@ class TreeOfThoughts:
             if selected:
                 print(f"Top score: {selected[0].score}")
 
+        print(f"Total tokens used: {total_tokens}")
         # Best solution has highest-scoring newest thought
         return current_paths[0] if current_paths else "No solution found"
 
     # Internal function for proposing new thoughts
-    def _propose(self, problem: str, history: str, k: int) -> list[str]:
+    def _propose(self, problem: str, history: str, k: int) -> tuple[list[str], int]:
         prompt = prompts.propose_prompt.format(
             input=problem,
             history=history if history else "Empty",
@@ -86,14 +90,18 @@ class TreeOfThoughts:
                     system_instruction=prompts.system_prompt
                 )
             )
+            # Extract tokens from usage_metadata
+            usage = response.usage_metadata
+            token_count = usage.total_token_count if usage else 0
+            
             # Split by newline and filter empty lines
-            return [line.strip() for line in response.text.split('\n') if line.strip()]
+            return [line.strip() for line in response.text.split('\n') if line.strip()], token_count
         except Exception as e:
             print(f"Error in propose: {e}")
-            return []
+            return [], 0
 
     # Internal function for evaluating new thoughts
-    def _evaluate(self, problem: str, history: str, candidate: str) -> float:
+    def _evaluate(self, problem: str, history: str, candidate: str) -> tuple[float, int]:
         prompt = prompts.value_prompt.format(
             input=problem,
             history=history,
@@ -107,15 +115,19 @@ class TreeOfThoughts:
                     system_instruction=prompts.system_prompt
                 )
             )
+            
+            # Extract tokens from usage_metadata
+            usage = response.usage_metadata
+            token_count = usage.total_token_count if usage else 0
 
             # Match 0.x, 1.0, and 1 in text output
             match = re.search(r'Score:\s*(0\.\d+|1\.0|1)', response.text)
             if match:
-                return float(match.group(1))
-            return 0.1 # Default low score if parse fails
+                return float(match.group(1)), token_count
+            return 0.1, token_count # Default low score if parse fails
         except Exception as e:
             print(f"Error in evaluate: {e}")
-            return 0.0
+            return 0.0, 0
 
 if __name__ == "__main__":
     # Initialize task and solver
