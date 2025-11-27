@@ -1,7 +1,10 @@
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+import prompts
+from tasks import Game24Task, BaseTask
+import re
 
 # Load environment variables
 load_dotenv()
@@ -9,169 +12,128 @@ load_dotenv()
 # Uses "GEMINI_API_KEY" in .env
 client = genai.Client()
 
-system_prompt = """
-        You are a reasoning agent participating in a collaborative problem-solving session.
+# Thought class (thought string and evaluation score)
+class Thought(BaseModel):
+    thought: str
+    score: float
 
-        Task: Given the original problem and blackboard context, add a response based on one of the following tags.
+class TreeOfThoughts:
+    def __init__(self, task: BaseTask, model_name: str = "gemini-2.5-flash"):
+        self.task = task # Unused for now
+        self.model_name = model_name
 
-        Tags:
-        - [FINISH]: You believe the problem is solved and reasoning is correct
-        - [EXPLORE]: You're exploring a new approach or alternative
-        - [CRITIQUE]: You're challenging or questioning a previous contribution
-        - [QUESTION]: You need clarification on something
-"""
+    def solve(self, initial_problem: str, k: int = 3, b: int = 5, d: int = 3):
+        """
+        Solves the problem using BFS.
 
+        k: Number of proposed thoughts per state
+        b: Branching factor (top states to keep)
+        d: Max depth (steps)
+        """
+        # Validate Input
+        if not self.task.validate_input(initial_problem):
+            return "Invalid input for task."
 
-# Define structured output schema for synthesizer
-class Synthesized(BaseModel):
-    answer: int = Field(description="The final numerical answer to the problem")
-    reasoning: str = Field(
-        description="Brief explanation of why this is the correct answer based on the discussion"
-    )
+        # Empty "tree" for tracking paths (strings representing full move histories)
+        current_paths = [""] 
+        
+        # Loop for "d" steps
+        for step in range(d):
+            print(f"Step {step+1}/{d}, current paths: {len(current_paths)}")
+            
+            # 1. Generate k new thoughts per path
+            candidates = []
+            for path in current_paths:
+                proposals = self._propose(initial_problem, path, k)
+                
+                for p in proposals:
+                    new_path = (path + "\n" + p).strip() # Old path + new thought (NOTE: redundant path copying)
+                    candidates.append(new_path)
 
+            if not candidates:
+                break
 
-# Extract text from blackboard (list of dicts)
-def get_text(blackboard: list) -> str:
-    if not blackboard:
-        return "Empty"
+            # 2. Evaluate each new thought
+            evaluated_thoughts = []
+            for path in candidates:
+                last_step = path.split('\n')[-1] # Evaluate last step in each path (i.e. new thought)
+                score = self._evaluate(initial_problem, path, last_step)
+                evaluated_thoughts.append(Thought(thought=path, score=score))
 
-    return "\n\n".join([e["content"] for e in blackboard])
+            # 3. Select top "b" new thoughts (prune others)
+            evaluated_thoughts.sort(key=lambda x: x.score, reverse=True) # Sort by descending score
+            selected = evaluated_thoughts[:b] # Keep top b
+            current_paths = [t.thought for t in selected]
+            
+            if selected:
+                print(f"Top score: {selected[0].score}")
 
+        # Best solution has highest-scoring newest thought
+        return current_paths[0] if current_paths else "No solution found"
 
-def multiagent_solve(
-    problem: str, rounds: int, agents: int
-) -> tuple[Synthesized, list]:
-    """
-    Run multiagent debate and return synthesized answer.
-
-    Args:
-        problem: The problem to solve
-        rounds: Number of debate rounds
-        agents: Number of agents
-
-    Returns:
-        Synthesized object with answer and reasoning
-    """
-    blackboard = []
-
-    # Create independent agent contexts
-    agent_contexts = [
-        [
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part(
-                        text=f"Try to solve {problem}. Choose from your given tags to determine which type of contribution would be most meaningful."
-                    )
-                ],
-            )
-        ]
-        for _ in range(agents)
-    ]
-
-    for round in range(rounds):
-        for i, agent_context in enumerate(agent_contexts):
-
-            # Only add blackboard context after the first round
-            if round > 0:
-                blackboard_summary = get_text(blackboard)
-                update_message = types.Content(
-                    role="user",
-                    parts=[
-                        types.Part(
-                            text=f"""
-                    Here's what has been discussed so far: {blackboard_summary}
-                    """
-                        )
-                    ],
-                )
-                agent_context.append(update_message)
-
-            # Generate response with agent memory
+    # Internal function for proposing new thoughts
+    def _propose(self, problem: str, history: str, k: int) -> list[str]:
+        prompt = prompts.propose_prompt.format(
+            input=problem,
+            history=history if history else "Empty",
+            k=k
+        )
+        try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                config=types.GenerateContentConfig(system_instruction=system_prompt),
-                contents=agent_context,
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=prompts.system_prompt
+                )
+            )
+            # Split by newline and filter empty lines
+            return [line.strip() for line in response.text.split('\n') if line.strip()]
+        except Exception as e:
+            print(f"Error in propose: {e}")
+            return []
+
+    # Internal function for evaluating new thoughts
+    def _evaluate(self, problem: str, history: str, candidate: str) -> float:
+        prompt = prompts.value_prompt.format(
+            input=problem,
+            history=history,
+            candidate=candidate
+        )
+        try:
+            response = client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=prompts.system_prompt
+                )
             )
 
-            # Add response to agent memory
-            agent_context.append(
-                types.Content(role="model", parts=[types.Part(text=response.text)])
-            )
+            # Match 0.x, 1.0, and 1 in text output
+            match = re.search(r'Score:\s*(0\.\d+|1\.0|1)', response.text)
+            if match:
+                return float(match.group(1))
+            return 0.1 # Default low score if parse fails
+        except Exception as e:
+            print(f"Error in evaluate: {e}")
+            return 0.0
 
-            # Add response to blackboard
-            blackboard.append({"agent_id": i, "round": round, "content": response.text})
-
-    # Synthesize final answer
-    synthesizer_prompt = f"""
-        You are a synthesizer agent responsible for determining the final output of a collaborative problem-solving session.
-        Problem: {problem}
-
-        Discussion: {get_text(blackboard)}
-
-        Task: Based on all the reasoning above, provide the final numerical answer and your reasoning.
-    """
-
-    synthesized = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=synthesizer_prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=Synthesized.model_json_schema(),
-        ),
-    )
-
-    final_answer = Synthesized.model_validate_json(synthesized.text)
-    return final_answer, blackboard
-
-
-def single_agent_solve(problem: str) -> Synthesized:
-    """
-    Run single agent baseline (no debate).
-
-    Args:
-        problem: The problem to solve
-
-    Returns:
-        Synthesized object with answer and reasoning
-    """
-    single_agent_prompt = f"""
-        You are a helpful math problem solver.
-        
-        Problem: {problem}
-        
-        Task: Solve this problem step by step and provide your final numerical answer with reasoning.
-    """
-
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=single_agent_prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=Synthesized.model_json_schema(),
-        ),
-    )
-
-    result = Synthesized.model_validate_json(response.text)
-    return result
-
-
-# Main execution (for standalone testing)
 if __name__ == "__main__":
-    problem = "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn?"
-
-    final_answer, blackboard = multiagent_solve(problem, rounds=2, agents=1)
-
-    # Write blackboard to output file
-    output_file = "output.txt"
-
-    with open(output_file, "w") as f:
-        f.write(f"=== FINAL ANSWER: {final_answer.answer} === \n\n")
-        f.write(f"Reasoning: {final_answer.reasoning}\n\n")
-
-        f.write("=== FINAL BLACKBOARD ===\n\n")
-
-        for entry in blackboard:
-            f.write(f"Agent {entry['agent_id']} (Round {entry['round']}):\n")
-            f.write(f"{entry['content']}\n")
-            f.write("-" * 80 + "\n")
+    # Initialize task and solver
+    task = Game24Task()
+    tot = TreeOfThoughts(task)
+    
+    # Example problem
+    problem = "2 2 6 8"
+    print(f"Solving: {problem}")
+    
+    # Run Tree of Thoughts
+    best_path = tot.solve(problem, k=3, b=5, d=3)
+    
+    # Output results
+    print("\n=== BEST PATH ===")
+    print(best_path)
+    
+    with open("output.txt", "w") as f:
+        f.write(f"Problem: {problem}\n\n")
+        f.write("=== BEST PATH ===\n")
+        f.write(best_path)
