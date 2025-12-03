@@ -1,16 +1,12 @@
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
 from pydantic import BaseModel
 import prompts
 from tasks import Game24Task, BaseTask
+from models import GeminiLLM, BaseLLM
 import re
 
 # Load environment variables
 load_dotenv()
-
-# Uses "GEMINI_API_KEY" in .env
-client = genai.Client()
 
 # Thought class (thought string and evaluation score)
 class Thought(BaseModel):
@@ -18,9 +14,9 @@ class Thought(BaseModel):
     score: float
 
 class TreeOfThoughts:
-    def __init__(self, task: BaseTask, model_name: str = "gemini-2.5-flash"):
-        self.task = task # Used for validating input + getting task prompt
-        self.model_name = model_name
+    def __init__(self, task: BaseTask, llm: BaseLLM):
+        self.task = task
+        self.llm = llm
 
     def solve(self, initial_problem: str, k: int = 3, b: int = 5, d: int = 3, log_file=None):
         """
@@ -93,23 +89,11 @@ class TreeOfThoughts:
             history=history if history else "Empty",
             k=k
         )
-        try:
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=prompts.system_prompt
-                )
-            )
-            # Extract tokens from usage_metadata
-            usage = response.usage_metadata
-            token_count = usage.total_token_count if usage else 0
-            
-            # Split by newline and filter empty lines
-            return [line.strip() for line in response.text.split('\n') if line.strip()], token_count
-        except Exception as e:
-            print(f"Error in propose: {e}")
-            return [], 0
+        
+        response_text, token_count = self.llm.generate(prompt, system_prompt=prompts.system_prompt)
+        
+        # Split by newline and filter empty lines
+        return [line.strip() for line in response_text.split('\n') if line.strip()], token_count
 
     # Internal function for evaluating new thoughts
     def _evaluate(self, problem: str, history: str, candidate: str) -> tuple[float, int]:
@@ -118,32 +102,20 @@ class TreeOfThoughts:
             history=history,
             candidate=candidate
         )
-        try:
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=prompts.system_prompt
-                )
-            )
-            
-            # Extract tokens from usage_metadata
-            usage = response.usage_metadata
-            token_count = usage.total_token_count if usage else 0
+        
+        response_text, token_count = self.llm.generate(prompt, system_prompt=prompts.system_prompt)
 
-            # Match 0.x, 1.0, and 1 in text output
-            match = re.search(r'Score:\s*(0\.\d+|1\.0|1)', response.text)
-            if match:
-                return float(match.group(1)), token_count
-            return 0.1, token_count # Default low score if parse fails
-        except Exception as e:
-            print(f"Error in evaluate: {e}")
-            return 0.0, 0
+        # Match 0.x, 1.0, and 1 in text output
+        match = re.search(r'Score:\s*(0\.\d+|1\.0|1)', response_text)
+        if match:
+            return float(match.group(1)), token_count
+        return 0.1, token_count # Default low score if parse fails
 
 if __name__ == "__main__":
     # Initialize task and solver
     task = Game24Task()
-    tot = TreeOfThoughts(task)
+    llm = GeminiLLM()
+    tot = TreeOfThoughts(task, llm)
     
     # Example problem
     problem = "2 2 6 8"
