@@ -20,6 +20,13 @@ class BaseTask(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_prompt(self, input_str: str) -> str:
+        """
+        Returns the task-specific prompt/instructions based on the input.
+        """
+        pass
+
 
 class Game24Task(BaseTask):
     def __init__(self):
@@ -33,6 +40,15 @@ class Game24Task(BaseTask):
             return abs(eval(expression) - self.target) < 1e-6
         except:
             return False
+
+    def get_prompt(self, input_str: str) -> str:
+        return (
+            f"Use the numbers {input_str} to create a valid arithmetic expression that equals {self.target}.\n"
+            "At each step, select two numbers to operate on (+, -, *, /).\n"
+            "Format your response exactly like this example:\n"
+            "4 + 8 = 12 (left: 2 6 12)\n"
+            "Goal: Reach exactly 24."
+        )
 
     def get_left(self, thought: str) -> str:
         """

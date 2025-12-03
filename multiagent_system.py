@@ -19,20 +19,24 @@ class Thought(BaseModel):
 
 class TreeOfThoughts:
     def __init__(self, task: BaseTask, model_name: str = "gemini-2.5-flash"):
-        self.task = task # Unused for now
+        self.task = task # Used for validating input + getting task prompt
         self.model_name = model_name
 
-    def solve(self, initial_problem: str, k: int = 3, b: int = 5, d: int = 3):
+    def solve(self, initial_problem: str, k: int = 3, b: int = 5, d: int = 3, log_file=None):
         """
         Solves the problem using BFS.
 
         k: Number of proposed thoughts per state
         b: Branching factor (top states to keep)
         d: Max depth (steps)
+        log_file: Open file handle for logging (optional)
         """
-        # Validate Input
+        # Validate input
         if not self.task.validate_input(initial_problem):
             return "Invalid input for task."
+
+        # Generate full task prompt
+        task_prompt = self.task.get_prompt(initial_problem)
 
         # Empty "tree" for tracking paths (strings representing full move histories)
         current_paths = [""] 
@@ -45,7 +49,7 @@ class TreeOfThoughts:
             # 1. Generate k new thoughts per path
             candidates = []
             for path in current_paths:
-                proposals, tokens = self._propose(initial_problem, path, k)
+                proposals, tokens = self._propose(task_prompt, path, k)
                 total_tokens += tokens
                 
                 for p in proposals:
@@ -59,7 +63,7 @@ class TreeOfThoughts:
             evaluated_thoughts = []
             for path in candidates:
                 last_step = path.split('\n')[-1] # Evaluate last step in each path (i.e. new thought)
-                score, tokens = self._evaluate(initial_problem, path, last_step)
+                score, tokens = self._evaluate(task_prompt, path, last_step)
                 total_tokens += tokens
                 evaluated_thoughts.append(Thought(thought=path, score=score))
 
@@ -68,6 +72,13 @@ class TreeOfThoughts:
             selected = evaluated_thoughts[:b] # Keep top b
             current_paths = [t.thought for t in selected]
             
+            # Log top thoughts
+            if log_file:
+                log_file.write(f"\n--- Step {step+1} Top Thoughts ---\n")
+                for i, t in enumerate(selected):
+                    log_file.write(f"Rank {i+1} (Score: {t.score}):\n{t.thought}\n{'-'*20}\n")
+                    print(f"Rank {i+1} (Score: {t.score}):\n{t.thought}\n{'-'*20}\n")
+
             if selected:
                 print(f"Top score: {selected[0].score}")
 
@@ -139,13 +150,13 @@ if __name__ == "__main__":
     print(f"Solving: {problem}")
     
     # Run Tree of Thoughts
-    best_path = tot.solve(problem, k=3, b=5, d=3)
+    with open("output.txt", "w") as f:
+        f.write(f"Problem: {problem}\n")
+        best_path = tot.solve(problem, k=3, b=5, d=3, log_file=f)
+        
+        f.write("\n=== BEST PATH ===\n")
+        f.write(best_path)
     
     # Output results
     print("\n=== BEST PATH ===")
     print(best_path)
-    
-    with open("output.txt", "w") as f:
-        f.write(f"Problem: {problem}\n\n")
-        f.write("=== BEST PATH ===\n")
-        f.write(best_path)
