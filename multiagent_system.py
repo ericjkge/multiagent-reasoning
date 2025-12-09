@@ -24,9 +24,114 @@ class TreeNode:
             history.append(curr.content)
             curr = curr.parent
         return "\n".join(reversed(history))
+
+# Global blackboard with ToT, work queue, and completed solutions
+class Blackboard:
+    def __init__(self, problem: str):
+        self.problem = problem              # Original problem
+        self.root = TreeNode(content="")    # Tree root
+        self.work_queue = []                # List of nodes to expand
+        self.solutions = []                 # Completed solution paths
+        self.total_tokens = 0
+        self.lock = asyncio.Lock()
     
-    def add_child(self, node: 'TreeNode'):
-        self.children.append(node)
+    async def add_work(self, node: TreeNode):
+        """Add a node to the work queue."""
+        async with self.lock:
+            self.work_queue.append(node)
+    
+    async def get_work(self) -> TreeNode | None:
+        """Get next node to expand (returns None if queue empty)."""
+        async with self.lock:
+            if self.work_queue:
+                return self.work_queue.pop(0)
+            return None
+    
+    async def add_node(self, parent: TreeNode, content: str, score: float) -> TreeNode:
+        """Create a new node and attach to tree."""
+        async with self.lock:
+            new_node = TreeNode(content=content, parent=parent, score=score)
+            parent.children.append(new_node)
+            return new_node
+    
+    async def add_solution(self, node: TreeNode):
+        """Record a completed solution."""
+        async with self.lock:
+            self.solutions.append(node)
+    
+    async def add_tokens(self, count: int):
+        """Track token usage."""
+        async with self.lock:
+            self.total_tokens += count
+
+
+class Agent:
+    def __init__(self, agent_id: int, llm: BaseLLM):
+        self.agent_id = agent_id
+        self.llm = llm
+    
+    # Main agent loop (get node, propose steps, evaluate steps, push results)
+    async def run(self, blackboard: Blackboard, max_iterations: int = 10):
+        """Main agent loop: pull work, expand, evaluate, push results."""
+        for _ in range(max_iterations):
+            # Get next node to work on
+            node = await blackboard.get_work()
+            if node is None:
+                await asyncio.sleep(0.1)  # Wait for work
+                continue
+            
+            # Propose next steps
+            proposals, tokens = await self._propose(blackboard.problem, node.content)
+            await blackboard.add_tokens(tokens)
+            
+            # Evaluate and add to tree
+            for content in proposals:
+                score, tokens = await self._evaluate(content)
+                await blackboard.add_tokens(tokens)
+                new_node = await blackboard.add_node(node, content, score)
+                
+                # Check if solution (only "24" left)
+                remaining = self._extract_remaining(content)
+                if remaining.strip() == "24":
+                    await blackboard.add_solution(new_node)
+                else:
+                    # Add to work queue for further expansion
+                    await blackboard.add_work(new_node)
+    
+    def _extract_remaining(self, step: str) -> str:
+        """Extract remaining numbers from step."""
+        match = re.search(r'\(left:\s*([^\)]+)\)', step)
+        return match.group(1).strip() if match else ""
+    
+    async def _propose(self, problem: str, parent_content: str) -> tuple[list[str], int]:
+        """Generate next step proposals."""
+        if parent_content:
+            remaining = self._extract_remaining(parent_content)
+        else:
+            remaining = problem
+        
+        prompt = prompts.propose_prompt.format(input=remaining)
+        response_text, token_count = await self.llm.agenerate(prompt, system_prompt=prompts.system_prompt)
+        
+        proposals = [line.strip() for line in response_text.split('\n') if line.strip()]
+        return proposals, token_count
+    
+    async def _evaluate(self, candidate: str) -> tuple[float, int]:
+        """Evaluate a candidate step."""
+        remaining = self._extract_remaining(candidate)
+        if not remaining:
+            return 0.001, 0
+        
+        prompt = prompts.value_prompt.format(input=remaining)
+        response_text, token_count = await self.llm.agenerate(prompt, system_prompt=prompts.system_prompt)
+        
+        response_lower = response_text.lower()
+        if 'sure' in response_lower:
+            return 20, token_count
+        elif 'likely' in response_lower:
+            return 1, token_count
+        else:
+            return 0.001, token_count
 
 class TreeOfThoughts:
     def __init__(self, task: BaseTask, llm: BaseLLM):
@@ -83,7 +188,7 @@ class TreeOfThoughts:
             current_nodes = []
             for score, parent_node, content in selected:
                 new_node = TreeNode(content=content, parent=parent_node, score=score)
-                parent_node.add_child(new_node)
+                parent_node.children.append(new_node)
                 current_nodes.append(new_node)
             
             # Log top thoughts
@@ -100,7 +205,7 @@ class TreeOfThoughts:
         # Best solution has highest-scoring newest thought
         return current_nodes[0].get_history() if current_nodes else "No solution found"
 
-    # Internal helper for parsing "left" numbers (e.g. '2 + 8 = 10 (left: 8 10 14)' -> '8 10 14')
+    # Internal helper for parsing "left" numbers (e.g. "2 + 8 = 10 (left: 8 10 14)"" -> "8 10 14")
     def _extract_remaining(self, step: str) -> str:
         match = re.search(r'\(left:\s*([^\)]+)\)', step)
         return match.group(1).strip() if match else ""
